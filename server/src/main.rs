@@ -2,6 +2,9 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -21,7 +24,7 @@ enum Command {
     Transfer,
     Play,
     Pause,
-    Repeat
+    Repeat,
 }
 
 #[derive(Debug)]
@@ -30,7 +33,7 @@ struct App {
     exit: bool,
     playing: bool,
     transfered: bool,
-    client: TcpStream,
+    handles: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 impl App {
@@ -45,11 +48,13 @@ impl App {
         frame.render_widget(self, frame.area());
     }
     fn handle_events(&mut self) -> io::Result<()> {
-        match event::read()? {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.match_key_event(key_event);
+        if event::poll(Duration::from_secs(2))? {
+            match event::read()? {
+                Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                    self.match_key_event(key_event);
+                }
+                _ => {}
             }
-            _ => {}
         }
         Ok(())
     }
@@ -80,8 +85,10 @@ impl App {
         if !self.playing && self.transfered {
             self.playing = true;
             match self.send_command(Command::Play) {
-                Ok(_) => {},
-                Err(_) => {self.exit = true;}
+                Ok(_) => {}
+                Err(_) => {
+                    self.exit = true;
+                }
             }
             //stream_file(&mut self.client, "/home/dominik/Documents/music/song.mp3").unwrap();
         }
@@ -90,8 +97,10 @@ impl App {
         if self.transfered {
             self.playing = false;
             match self.send_command(Command::Repeat) {
-                Ok(_) => {},
-                Err(_) => {self.exit = true;}
+                Ok(_) => {}
+                Err(_) => {
+                    self.exit = true;
+                }
             }
         }
     }
@@ -99,25 +108,32 @@ impl App {
         if self.playing && self.transfered {
             self.playing = false;
             match self.send_command(Command::Pause) {
-                Ok(_) => {},
-                Err(_) => {self.exit = true;}
+                Ok(_) => {}
+                Err(_) => {
+                    self.exit = true;
+                }
             }
         }
     }
     fn transfer_file(&mut self) {
         self.send_command(Command::Transfer).unwrap();
-        stream_file(&mut self.client, "/home/dominik/Documents/music/song.mp3").unwrap();
     }
-    fn send_command(&mut self, command: Command) -> io::Result<()> {
+    fn send_command(&mut self, command: Command) -> Result<(), Box<dyn Error>> {
         let numeric: u8 = match command {
             Command::Play => 1,
             Command::Transfer => 2,
             Command::Pause => 3,
-            Command::Repeat => 4
+            Command::Repeat => 4,
         };
 
         let bytes = numeric.to_be_bytes();
-        self.client.write_all(&bytes)?;
+
+        for client in self.handles.lock().unwrap().iter_mut() {
+            client.write_all(&bytes)?;
+            if numeric == 2 {
+                stream_file(client, "/home/dominik/Documents/music/song.mp3")?;
+            }
+        }
 
         Ok(())
     }
@@ -143,7 +159,9 @@ impl Widget for &App {
             )
             .border_set(border::THICK);
         let counter_text = Text::from(vec![Line::from(vec![
-            "Transfered: ".into(),
+            "Connected clients: ".into(),
+            self.handles.lock().unwrap().len().to_string().yellow(),
+            " Transfered: ".into(),
             self.transfered.to_string().yellow(),
             " Playing: ".into(),
             self.playing.to_string().yellow(),
@@ -160,13 +178,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = ratatui::init();
     let listener = TcpListener::bind("127.0.0.1:6969")?;
 
-    let client = listener.incoming().next().ok_or("Failed to open stream")?;
+    let clients = Arc::new(Mutex::new(Vec::<TcpStream>::new()));
+    let acceptor = clients.clone();
+
+    thread::spawn(move || {
+        for client in listener.incoming().flatten() {
+            acceptor.lock().unwrap().push(client);
+        }
+    });
+
     let _app_result = App {
         title: 0,
         playing: false,
-        client: client?,
         transfered: false,
         exit: false,
+        handles: clients,
     }
     .run(&mut terminal);
 
