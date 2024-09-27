@@ -2,7 +2,8 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Receiver;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -27,6 +28,11 @@ enum Command {
     Repeat,
 }
 
+enum AppEvent {
+    CrossTerm(crossterm::event::Event),
+    ClientUpdate,
+}
+
 #[derive(Debug)]
 struct App {
     title: u32,
@@ -34,10 +40,11 @@ struct App {
     playing: bool,
     transfered: bool,
     handles: Arc<Mutex<Vec<TcpStream>>>,
+    event_channel: Receiver<AppEvent>,
 }
 
 impl App {
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
         while !self.exit {
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?
@@ -47,14 +54,15 @@ impl App {
     fn draw(&self, frame: &mut Frame) {
         frame.render_widget(self, frame.area());
     }
-    fn handle_events(&mut self) -> io::Result<()> {
-        if event::poll(Duration::from_secs(2))? {
-            match event::read()? {
+    fn handle_events(&mut self) -> Result<(), Box<dyn Error>> {
+        match self.event_channel.recv()? {
+            AppEvent::ClientUpdate => {}
+            AppEvent::CrossTerm(event) => match event {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                     self.match_key_event(key_event);
                 }
                 _ => {}
-            }
+            },
         }
         Ok(())
     }
@@ -178,13 +186,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = ratatui::init();
     let listener = TcpListener::bind("127.0.0.1:6969")?;
 
+    let (tx, rx) = mpsc::channel::<AppEvent>();
     let clients = Arc::new(Mutex::new(Vec::<TcpStream>::new()));
     let acceptor = clients.clone();
+
+    let t1 = tx.clone();
+    let t2 = tx.clone();
 
     thread::spawn(move || {
         for client in listener.incoming().flatten() {
             acceptor.lock().unwrap().push(client);
+            t1.send(AppEvent::ClientUpdate).unwrap();
         }
+    });
+
+    thread::spawn(move || loop {
+        let event = event::read().unwrap();
+        t2.send(AppEvent::CrossTerm(event)).unwrap();
     });
 
     let _app_result = App {
@@ -193,6 +211,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         transfered: false,
         exit: false,
         handles: clients,
+        event_channel: rx,
     }
     .run(&mut terminal);
 
