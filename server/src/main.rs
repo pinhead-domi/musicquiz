@@ -1,11 +1,12 @@
 use std::error::Error;
-use std::fs::File;
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::Receiver;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+
+use serde::Deserialize;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
@@ -33,6 +34,17 @@ enum AppEvent {
     ClientUpdate,
 }
 
+#[derive(Deserialize, Debug)]
+struct TitleInfo {
+    title: String,
+    interpret: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct TitleList {
+    titles: Vec<TitleInfo>,
+}
+
 #[derive(Debug)]
 struct App {
     title: u32,
@@ -41,6 +53,7 @@ struct App {
     transfered: bool,
     handles: Arc<Mutex<Vec<TcpStream>>>,
     event_channel: Receiver<AppEvent>,
+    titles: TitleList,
 }
 
 impl App {
@@ -136,12 +149,18 @@ impl App {
 
         let bytes = numeric.to_be_bytes();
 
-        for client in self.handles.lock().unwrap().iter_mut() {
-            client.write_all(&bytes)?;
-            if numeric == 2 {
-                stream_file(client, "/home/dominik/Documents/music/song.mp3")?;
+        self.handles.lock().unwrap().retain_mut(|client| {
+            let mut keep = true;
+            keep &= client.write_all(&bytes).is_ok();
+            if keep && numeric == 2 {
+                keep &= stream_file(
+                    client,
+                    format!("/home/dominik/Documents/music/{}.mp3", self.title + 1).as_str(),
+                ).is_ok();
             }
-        }
+
+            keep
+        });
 
         Ok(())
     }
@@ -149,7 +168,21 @@ impl App {
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = Title::from(" Music Quiz ".bold());
+        //let title = Title::from(" Music Quiz ".bold());
+
+        let title = Title::from(Line::from(vec![
+            "Music Quiz ".into(),
+            self.titles.titles[self.title as usize]
+                .title
+                .as_str()
+                .blue(),
+            " ".into(),
+            self.titles.titles[self.title as usize]
+                .interpret
+                .as_str()
+                .yellow(),
+        ]));
+
         let instructions = Title::from(Line::from(vec![
             " Play ".into(),
             "<P>".blue().bold(),
@@ -183,6 +216,9 @@ impl Widget for &App {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let file_content = fs::read_to_string("/home/dominik/Documents/music/titles.json")?;
+    let titles: TitleList = serde_json::from_str(&file_content)?;
+
     let mut terminal = ratatui::init();
     let listener = TcpListener::bind("127.0.0.1:6969")?;
 
@@ -212,6 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         exit: false,
         handles: clients,
         event_channel: rx,
+        titles,
     }
     .run(&mut terminal);
 
