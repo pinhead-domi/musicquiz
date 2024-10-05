@@ -93,6 +93,9 @@ impl App {
                     self.transfer_file();
                 }
             }
+            KeyCode::Char('n') => {
+                self.next().unwrap();
+            }
             KeyCode::Char('r') => {
                 self.repeat();
             }
@@ -111,8 +114,18 @@ impl App {
                     self.exit = true;
                 }
             }
-            //stream_file(&mut self.client, "/home/dominik/Documents/music/song.mp3").unwrap();
         }
+    }
+    fn next(&mut self) -> Result<(), Box<dyn Error>> {
+        if (self.title as usize) < self.titles.titles.len() - 1 {
+            self.send_command(Command::Pause)?;
+            self.playing = false;
+
+            self.transfered = false;
+            self.title += 1;
+        }
+
+        Ok(())
     }
     fn repeat(&mut self) {
         if self.transfered {
@@ -156,7 +169,8 @@ impl App {
                 keep &= stream_file(
                     client,
                     format!("/home/dominik/Documents/music/{}.mp3", self.title + 1).as_str(),
-                ).is_ok();
+                )
+                .is_ok();
             }
 
             keep
