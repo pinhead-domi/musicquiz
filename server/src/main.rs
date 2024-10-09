@@ -11,16 +11,13 @@ use serde::Deserialize;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     buffer::Buffer,
-    layout::{Alignment, Rect},
+    layout::Rect,
     style::Stylize,
-    symbols::border,
-    text::{Line, Text},
-    widgets::{
-        block::{Position, Title},
-        Block, Paragraph, Widget,
-    },
+    text::Line,
+    widgets::{Block, Paragraph, Widget,},
     DefaultTerminal, Frame,
 };
+use ratatui::layout::{Layout, Constraint};
 
 enum Command {
     Transfer,
@@ -34,15 +31,101 @@ enum AppEvent {
     ClientUpdate,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct TitleInfo {
     title: String,
     interpret: String,
 }
 
+impl Widget for TitleInfo {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        Paragraph::new(vec![
+            Line::from(vec![
+                "Title: ".blue().bold(),
+                self.title.as_str().into()
+            ]),
+            Line::from(vec![
+                "Interpret: ".yellow().bold(),
+                self.interpret.as_str().into()
+            ])
+        ]).block(title_block("Current Title"))
+            .gray()
+            .render(area, buf);
+    }
+}
+
+fn title_block(title: &str) -> Block {
+    Block::bordered()
+        .gray()
+        .title(title.bold().into_centered_line())
+}
+
 #[derive(Deserialize, Debug)]
 struct TitleList {
     titles: Vec<TitleInfo>,
+}
+
+struct ConnectionInfo {
+    active_clients: u8,
+    transfered: bool,
+    playing: bool,
+}
+
+impl Widget for ConnectionInfo {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        Paragraph::new(vec![
+            Line::from(vec![
+                "Number of clients: ".into(),
+                self.active_clients.to_string().yellow().bold()
+            ]),
+            Line::from(vec![
+                "Transferred: ".into(),
+                self.transfered.to_string().yellow().bold()
+            ]),
+            Line::from(vec![
+                "Playing: ".into(),
+                self.playing.to_string().yellow().bold()
+            ])
+        ]).block(title_block("Connection Info"))
+            .gray()
+            .render(area, buf);
+    }
+}
+
+struct GameInfo {
+    titles_correct: u8,
+    interprets_correct: u8,
+    total_num: u8,
+    current_index: u8
+}
+
+impl Widget for GameInfo {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+
+        let incorrect_titles: u8 = 0;
+        let incorrect_interprets: u8 = 0;
+
+        Paragraph::new(vec![
+            Line::from(vec![
+                "Titles: ".into(),
+                self.titles_correct.to_string().green().bold(),
+                " + ".into(),
+                incorrect_titles.to_string().red().bold(),
+                " / ".into(),
+                self.total_num.to_string().into()
+            ]),
+            Line::from(vec![
+                "Interprets: ".into(),
+                self.interprets_correct.to_string().green().bold(),
+                " + ".into(),
+                incorrect_interprets.to_string().red().bold(),
+                " / ".into(),
+                self.total_num.to_string().into()
+            ])
+        ]).block(title_block("Game Info"))
+            .gray()
+            .render(area, buf);
+    }
 }
 
 #[derive(Debug)]
@@ -65,7 +148,33 @@ impl App {
         Ok(())
     }
     fn draw(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
+        let outer_layout = Layout::vertical(vec![
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ]).split(frame.area());
+
+        let inner_layout = Layout::horizontal(vec![
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ]).split(outer_layout[1]);
+
+        let connection_info = ConnectionInfo{
+            active_clients: self.handles.lock().unwrap().len() as u8,
+            transfered: self.transfered,
+            playing: self.playing
+        };
+
+        let game_info = GameInfo{
+            titles_correct: 0,
+            interprets_correct: 0,
+            current_index: self.title as u8,
+            total_num: self.titles.titles.len() as u8
+        };
+
+        frame.render_widget(self.titles.titles[self.title as usize].clone(), outer_layout[0]);
+        frame.render_widget(connection_info, inner_layout[0]);
+        frame.render_widget(game_info, inner_layout[1]);
+
     }
     fn handle_events(&mut self) -> Result<(), Box<dyn Error>> {
         match self.event_channel.recv()? {
@@ -168,7 +277,7 @@ impl App {
             if keep && numeric == 2 {
                 keep &= stream_file(
                     client,
-                    format!("/home/dominik/Documents/music/{}.mp3", self.title + 1).as_str(),
+                    format!("C:\\Users\\Dominik Haring\\Documents\\music quiz\\{}.mp3", self.title + 1).as_str(),
                 )
                 .is_ok();
             }
@@ -180,57 +289,8 @@ impl App {
     }
 }
 
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        //let title = Title::from(" Music Quiz ".bold());
-
-        let title = Title::from(Line::from(vec![
-            "Music Quiz ".into(),
-            self.titles.titles[self.title as usize]
-                .title
-                .as_str()
-                .blue(),
-            " ".into(),
-            self.titles.titles[self.title as usize]
-                .interpret
-                .as_str()
-                .yellow(),
-        ]));
-
-        let instructions = Title::from(Line::from(vec![
-            " Play ".into(),
-            "<P>".blue().bold(),
-            " Pause ".into(),
-            "<O>".blue().bold(),
-            " Quit ".into(),
-            "<Q>".blue().bold(),
-        ]));
-        let block = Block::bordered()
-            .title(title.alignment(Alignment::Center))
-            .title(
-                instructions
-                    .alignment(Alignment::Center)
-                    .position(Position::Bottom),
-            )
-            .border_set(border::THICK);
-        let counter_text = Text::from(vec![Line::from(vec![
-            "Connected clients: ".into(),
-            self.handles.lock().unwrap().len().to_string().yellow(),
-            " Transfered: ".into(),
-            self.transfered.to_string().yellow(),
-            " Playing: ".into(),
-            self.playing.to_string().yellow(),
-        ])]);
-
-        Paragraph::new(counter_text)
-            .centered()
-            .block(block)
-            .render(area, buf);
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
-    let file_content = fs::read_to_string("/home/dominik/Documents/music/titles.json")?;
+    let file_content = fs::read_to_string("C:\\Users\\Dominik Haring\\Documents\\GitHub\\musicquiz\\titles.json")?;
     let titles: TitleList = serde_json::from_str(&file_content)?;
 
     let mut terminal = ratatui::init();
