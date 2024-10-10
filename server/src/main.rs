@@ -4,8 +4,9 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::Receiver;
 use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use std::{thread, usize};
 
+use ratatui::widgets::List;
 use serde::Deserialize;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -94,14 +95,14 @@ impl Widget for ConnectionInfo {
 struct GameInfo {
     titles_correct: u8,
     interprets_correct: u8,
-    total_num: u8,
     current_index: u8,
+    total_num: u8,
 }
 
 impl Widget for GameInfo {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let incorrect_titles: u8 = 0;
-        let incorrect_interprets: u8 = 0;
+        let incorrect_titles: u8 = self.current_index - self.titles_correct;
+        let incorrect_interprets: u8 = self.current_index - self.interprets_correct;
 
         Paragraph::new(vec![
             Line::from(vec![
@@ -139,6 +140,12 @@ struct SongInfo {
     grading: Grading,
 }
 
+#[derive(Debug)]
+struct Client {
+    stream: TcpStream,
+    nickname: String,
+}
+
 impl Widget for SongInfo {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let title_grading = match self.grading.title {
@@ -162,13 +169,13 @@ impl Widget for SongInfo {
                 "Title: ".blue().bold(),
                 self.title.title.as_str().into(),
                 " - ".into(),
-                title_grading
+                title_grading,
             ]),
             Line::from(vec![
                 "Interpret: ".yellow().bold(),
                 self.title.interpret.as_str().into(),
                 " - ".into(),
-                interpret_grading
+                interpret_grading,
             ]),
         ])
         .block(title_block("Current Title"))
@@ -183,10 +190,11 @@ struct App {
     exit: bool,
     playing: bool,
     transfered: bool,
-    handles: Arc<Mutex<Vec<TcpStream>>>,
+    handles: Arc<Mutex<Vec<Client>>>,
     event_channel: Receiver<AppEvent>,
     titles: TitleList,
     current_grading: Grading,
+    grading_history: Vec<Grading>,
 }
 
 impl App {
@@ -202,9 +210,12 @@ impl App {
             Layout::vertical(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(frame.area());
 
-        let inner_layout =
-            Layout::horizontal(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(outer_layout[1]);
+        let inner_layout = Layout::horizontal(vec![
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+            Constraint::Fill(1),
+        ])
+        .split(outer_layout[1]);
 
         let connection_info = ConnectionInfo {
             active_clients: self.handles.lock().unwrap().len() as u8,
@@ -212,21 +223,45 @@ impl App {
             playing: self.playing,
         };
 
+        let titles_correct = self
+            .grading_history
+            .iter()
+            .filter(|grad| grad.title.is_some_and(|val| val))
+            .count() as u8;
+
+        let interprets_correct = self
+            .grading_history
+            .iter()
+            .filter(|grad| grad.interpret.is_some_and(|val| val))
+            .count() as u8;
+
         let game_info = GameInfo {
-            titles_correct: 0,
-            interprets_correct: 0,
+            titles_correct,
+            interprets_correct,
             current_index: self.title as u8,
             total_num: self.titles.titles.len() as u8,
         };
 
-        let song_info = SongInfo{
+        let song_info = SongInfo {
             title: self.titles.titles[self.title as usize].clone(),
-            grading: self.current_grading.clone()
+            grading: self.current_grading.clone(),
         };
 
         frame.render_widget(song_info, outer_layout[0]);
         frame.render_widget(connection_info, inner_layout[0]);
         frame.render_widget(game_info, inner_layout[1]);
+
+        let nicknames: Vec<String> = self
+            .handles
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|client| client.nickname.clone())
+            .collect();
+
+        List::new(nicknames)
+            .block(title_block("Clients"))
+            .render(inner_layout[2], frame.buffer_mut());
     }
     fn handle_events(&mut self) -> Result<(), Box<dyn Error>> {
         match self.event_channel.recv()? {
@@ -290,14 +325,16 @@ impl App {
         }
     }
     fn next(&mut self) -> Result<(), Box<dyn Error>> {
-        if (self.title as usize) < self.titles.titles.len() - 1 {
-            self.send_command(Command::Pause)?;
-            self.playing = false;
+        self.send_command(Command::Pause)?;
+        self.playing = false;
 
+        if self.current_grading.title.is_some() && self.current_grading.interpret.is_some() {
+            self.grading_history.push(self.current_grading.clone());
             self.reset_grading();
-
-            self.transfered = false;
-            self.title += 1;
+            if (self.title as usize) < self.titles.titles.len() - 1 {
+                self.transfered = false;
+                self.title += 1;
+            }
         }
 
         Ok(())
@@ -351,11 +388,11 @@ impl App {
 
         self.handles.lock().unwrap().retain_mut(|client| {
             let mut keep = true;
-            keep &= client.write_all(&bytes).is_ok();
+            keep &= client.stream.write_all(&bytes).is_ok();
             if keep && numeric == 2 {
                 keep &= stream_file(
-                    client,
-                    format!("C:/Users/Dominik Haring/Documents/music quiz/{}.mp3", self.title + 1).as_str(),
+                    &mut client.stream,
+                    format!("/Users/dominik/Projects/musicquiz/{}.mp3", self.title + 1).as_str(),
                 )
                 .is_ok();
             }
@@ -367,22 +404,36 @@ impl App {
     }
 }
 
+fn read_nickname(stream: &mut TcpStream) -> String {
+    let mut bytes_to_read = [0_u8; 64 / 8];
+    stream.read_exact(&mut bytes_to_read).unwrap();
+
+    let length_numeric = u64::from_be_bytes(bytes_to_read);
+    let mut buffer = vec![0_u8; length_numeric as usize];
+
+    stream.read_exact(&mut buffer).unwrap();
+
+    String::from_utf8(buffer).unwrap()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let file_content = fs::read_to_string("C:/Users/Dominik Haring/Documents/GitHub/musicquiz/titles.json")?;
+    let file_content = fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json")?;
     let titles: TitleList = serde_json::from_str(&file_content)?;
 
     let mut terminal = ratatui::init();
     let listener = TcpListener::bind("0.0.0.0:6969")?;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
-    let clients = Arc::new(Mutex::new(Vec::<TcpStream>::new()));
+    let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
     let acceptor = clients.clone();
 
     let t1 = tx.clone();
     let t2 = tx.clone();
 
     thread::spawn(move || {
-        for client in listener.incoming().flatten() {
+        for mut stream in listener.incoming().flatten() {
+            let nickname = read_nickname(&mut stream);
+            let client = Client { nickname, stream };
             acceptor.lock().unwrap().push(client);
             t1.send(AppEvent::ClientUpdate).unwrap();
         }
@@ -405,6 +456,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             title: None,
             interpret: None,
         },
+        grading_history: Vec::new(),
     }
     .run(&mut terminal);
 

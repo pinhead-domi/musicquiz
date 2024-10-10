@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use ratatui::{DefaultTerminal, Frame};
 use rodio::{Decoder, OutputStream, Sink};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 use crossterm::event;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
@@ -35,7 +35,6 @@ enum AppEvent {
 enum AppState{
     EnterNickname,
     Disconnected,
-    ErrConecting,
     Paused,
     Playing
 }
@@ -45,7 +44,6 @@ impl Display for AppState {
         let display = match self {
             AppState::EnterNickname => { "NICKNAME CONFIG" }
             AppState::Disconnected => { "DISCONNECTED" }
-            AppState::ErrConecting => { "ERROR CONNECTING" }
             AppState::Paused => { "PAUSED" }
             AppState::Playing => { "PLAYING" }
         };
@@ -112,11 +110,7 @@ impl App {
             Constraint::Fill(1)
         ]).split(area);
 
-        let show_popup = match self.state {
-            AppState::EnterNickname => true,
-            AppState::Disconnected => true,
-            _ => false
-        };
+        let show_popup = matches!(self.state, AppState::EnterNickname | AppState::Disconnected);
 
         let block = Block::bordered().title(" Music Quiz Client ");
         Paragraph::new(vec![
@@ -248,12 +242,9 @@ impl App {
                     let command = read_command(&mut stream).unwrap();
                     let mut event = AppEvent::Command(command.clone());
 
-                    match command {
-                        Command::Transfer => {
-                            let song = read_data(&mut stream).unwrap();
-                            event = AppEvent::SongData(song);
-                        }
-                        _ => {}
+                    if let Command::Transfer = command {
+                        let song = read_data(&mut stream).unwrap();
+                        event = AppEvent::SongData(song);
                     }
                     sender.send(event).unwrap();
                 }
@@ -269,7 +260,7 @@ impl App {
         let num_bytes = num_bytes_numeric.to_be_bytes();
 
         stream.write_all(&num_bytes).unwrap();
-        stream.write_all(&bytes).unwrap();
+        stream.write_all(bytes).unwrap();
     }
 
     fn append_song(&mut self, song: Vec<u8>) -> Result<(),Box<dyn Error>> {
@@ -319,7 +310,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (_audio_stream, handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&handle)?;
     sink.set_volume(0.5);
-    let mut current_song: Option<Vec<u8>> = None;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
