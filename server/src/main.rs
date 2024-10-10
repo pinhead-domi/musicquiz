@@ -9,15 +9,15 @@ use std::thread;
 use serde::Deserialize;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::layout::{Constraint, Layout};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::Stylize,
     text::Line,
-    widgets::{Block, Paragraph, Widget,},
+    widgets::{Block, Paragraph, Widget},
     DefaultTerminal, Frame,
 };
-use ratatui::layout::{Layout, Constraint};
 
 enum Command {
     Transfer,
@@ -40,17 +40,15 @@ struct TitleInfo {
 impl Widget for TitleInfo {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(vec![
-            Line::from(vec![
-                "Title: ".blue().bold(),
-                self.title.as_str().into()
-            ]),
+            Line::from(vec!["Title: ".blue().bold(), self.title.as_str().into()]),
             Line::from(vec![
                 "Interpret: ".yellow().bold(),
-                self.interpret.as_str().into()
-            ])
-        ]).block(title_block("Current Title"))
-            .gray()
-            .render(area, buf);
+                self.interpret.as_str().into(),
+            ]),
+        ])
+        .block(title_block("Current Title"))
+        .gray()
+        .render(area, buf);
     }
 }
 
@@ -76,19 +74,20 @@ impl Widget for ConnectionInfo {
         Paragraph::new(vec![
             Line::from(vec![
                 "Number of clients: ".into(),
-                self.active_clients.to_string().yellow().bold()
+                self.active_clients.to_string().yellow().bold(),
             ]),
             Line::from(vec![
                 "Transferred: ".into(),
-                self.transfered.to_string().yellow().bold()
+                self.transfered.to_string().yellow().bold(),
             ]),
             Line::from(vec![
                 "Playing: ".into(),
-                self.playing.to_string().yellow().bold()
-            ])
-        ]).block(title_block("Connection Info"))
-            .gray()
-            .render(area, buf);
+                self.playing.to_string().yellow().bold(),
+            ]),
+        ])
+        .block(title_block("Connection Info"))
+        .gray()
+        .render(area, buf);
     }
 }
 
@@ -96,12 +95,11 @@ struct GameInfo {
     titles_correct: u8,
     interprets_correct: u8,
     total_num: u8,
-    current_index: u8
+    current_index: u8,
 }
 
 impl Widget for GameInfo {
     fn render(self, area: Rect, buf: &mut Buffer) {
-
         let incorrect_titles: u8 = 0;
         let incorrect_interprets: u8 = 0;
 
@@ -112,7 +110,7 @@ impl Widget for GameInfo {
                 " + ".into(),
                 incorrect_titles.to_string().red().bold(),
                 " / ".into(),
-                self.total_num.to_string().into()
+                self.total_num.to_string().into(),
             ]),
             Line::from(vec![
                 "Interprets: ".into(),
@@ -120,11 +118,62 @@ impl Widget for GameInfo {
                 " + ".into(),
                 incorrect_interprets.to_string().red().bold(),
                 " / ".into(),
-                self.total_num.to_string().into()
-            ])
-        ]).block(title_block("Game Info"))
-            .gray()
-            .render(area, buf);
+                self.total_num.to_string().into(),
+            ]),
+        ])
+        .block(title_block("Game Info"))
+        .gray()
+        .render(area, buf);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Grading {
+    interpret: Option<bool>,
+    title: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct SongInfo {
+    title: TitleInfo,
+    grading: Grading,
+}
+
+impl Widget for SongInfo {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let title_grading = match self.grading.title {
+            None => "not yet graded".gray().bold(),
+            Some(grade) => match grade {
+                true => "correct".green().bold(),
+                false => "incorrect".red().bold(),
+            },
+        };
+
+        let interpret_grading = match self.grading.interpret {
+            None => "not yet graded".gray().bold(),
+            Some(grade) => match grade {
+                true => "correct".green().bold(),
+                false => "incorrect".red().bold(),
+            },
+        };
+
+        Paragraph::new(vec![
+            Line::from(vec![
+                "Title: ".blue().bold(),
+                self.title.title.as_str().into(),
+                " - ".into(),
+                title_grading
+            ]),
+            Line::from(vec![
+                "Interpret: ".yellow().bold(),
+                self.title.interpret.as_str().into(),
+                " - ".into(),
+                interpret_grading
+            ]),
+        ])
+        .block(title_block("Current Title"))
+        .gray()
+        .render(area, buf);
     }
 }
 
@@ -137,6 +186,7 @@ struct App {
     handles: Arc<Mutex<Vec<TcpStream>>>,
     event_channel: Receiver<AppEvent>,
     titles: TitleList,
+    current_grading: Grading,
 }
 
 impl App {
@@ -148,33 +198,35 @@ impl App {
         Ok(())
     }
     fn draw(&self, frame: &mut Frame) {
-        let outer_layout = Layout::vertical(vec![
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ]).split(frame.area());
+        let outer_layout =
+            Layout::vertical(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(frame.area());
 
-        let inner_layout = Layout::horizontal(vec![
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ]).split(outer_layout[1]);
+        let inner_layout =
+            Layout::horizontal(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(outer_layout[1]);
 
-        let connection_info = ConnectionInfo{
+        let connection_info = ConnectionInfo {
             active_clients: self.handles.lock().unwrap().len() as u8,
             transfered: self.transfered,
-            playing: self.playing
+            playing: self.playing,
         };
 
-        let game_info = GameInfo{
+        let game_info = GameInfo {
             titles_correct: 0,
             interprets_correct: 0,
             current_index: self.title as u8,
-            total_num: self.titles.titles.len() as u8
+            total_num: self.titles.titles.len() as u8,
         };
 
-        frame.render_widget(self.titles.titles[self.title as usize].clone(), outer_layout[0]);
+        let song_info = SongInfo{
+            title: self.titles.titles[self.title as usize].clone(),
+            grading: self.current_grading.clone()
+        };
+
+        frame.render_widget(song_info, outer_layout[0]);
         frame.render_widget(connection_info, inner_layout[0]);
         frame.render_widget(game_info, inner_layout[1]);
-
     }
     fn handle_events(&mut self) -> Result<(), Box<dyn Error>> {
         match self.event_channel.recv()? {
@@ -201,6 +253,18 @@ impl App {
                     self.transfered = true;
                     self.transfer_file();
                 }
+            }
+            KeyCode::Char('a') => {
+                self.grade_title(false);
+            }
+            KeyCode::Char('s') => {
+                self.grade_title(true);
+            }
+            KeyCode::Char('y') => {
+                self.grade_interpret(false);
+            }
+            KeyCode::Char('x') => {
+                self.grade_interpret(true);
             }
             KeyCode::Char('n') => {
                 self.next().unwrap();
@@ -230,6 +294,8 @@ impl App {
             self.send_command(Command::Pause)?;
             self.playing = false;
 
+            self.reset_grading();
+
             self.transfered = false;
             self.title += 1;
         }
@@ -258,6 +324,18 @@ impl App {
             }
         }
     }
+    fn reset_grading(&mut self) {
+        self.current_grading = Grading {
+            title: None,
+            interpret: None,
+        }
+    }
+    fn grade_title(&mut self, grade: bool) {
+        self.current_grading.title = Some(grade);
+    }
+    fn grade_interpret(&mut self, grade: bool) {
+        self.current_grading.interpret = Some(grade);
+    }
     fn transfer_file(&mut self) {
         self.send_command(Command::Transfer).unwrap();
     }
@@ -277,7 +355,7 @@ impl App {
             if keep && numeric == 2 {
                 keep &= stream_file(
                     client,
-                    format!("C:\\Users\\Dominik Haring\\Documents\\music quiz\\{}.mp3", self.title + 1).as_str(),
+                    format!("/Users/dominik/Projects/musicquiz/{}.mp3", self.title + 1).as_str(),
                 )
                 .is_ok();
             }
@@ -290,7 +368,7 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let file_content = fs::read_to_string("C:\\Users\\Dominik Haring\\Documents\\GitHub\\musicquiz\\titles.json")?;
+    let file_content = fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json")?;
     let titles: TitleList = serde_json::from_str(&file_content)?;
 
     let mut terminal = ratatui::init();
@@ -323,6 +401,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         handles: clients,
         event_channel: rx,
         titles,
+        current_grading: Grading {
+            title: None,
+            interpret: None,
+        },
     }
     .run(&mut terminal);
 
