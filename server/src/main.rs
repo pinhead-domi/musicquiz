@@ -355,7 +355,7 @@ impl App {
             if keep && numeric == 2 {
                 keep &= stream_file(
                     client,
-                    format!("/Users/dominik/Projects/musicquiz/{}.mp3", self.title + 1).as_str(),
+                    format!("C:/Users/Dominik Haring/Documents/music quiz/{}.mp3", self.title + 1).as_str(),
                 )
                 .is_ok();
             }
@@ -368,11 +368,11 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let file_content = fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json")?;
+    let file_content = fs::read_to_string("C:/Users/Dominik Haring/Documents/GitHub/musicquiz/titles.json")?;
     let titles: TitleList = serde_json::from_str(&file_content)?;
 
     let mut terminal = ratatui::init();
-    let listener = TcpListener::bind("127.0.0.1:6969")?;
+    let listener = TcpListener::bind("0.0.0.0:6969")?;
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let clients = Arc::new(Mutex::new(Vec::<TcpStream>::new()));
