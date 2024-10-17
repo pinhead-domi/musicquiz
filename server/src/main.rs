@@ -137,6 +137,7 @@ struct Grading {
 #[derive(Debug, Clone)]
 struct SongInfo {
     title: TitleInfo,
+    next: Option<TitleInfo>,
     grading: Grading,
 }
 
@@ -164,7 +165,7 @@ impl Widget for SongInfo {
             },
         };
 
-        Paragraph::new(vec![
+        let mut line_elements = vec![
             Line::from(vec![
                 "Title: ".blue().bold(),
                 self.title.title.as_str().into(),
@@ -177,7 +178,29 @@ impl Widget for SongInfo {
                 " - ".into(),
                 interpret_grading,
             ]),
-        ])
+        ];
+
+        if let Some(next) = self.next {
+
+            line_elements.push(Line::from(vec![]));
+            line_elements.push(Line::from(vec![
+                "Coming up: ".gray().bold()
+            ]));
+
+            let append_title = vec![
+                "Interpret: ".blue().bold(),
+                next.title.clone().as_str().to_owned().into()
+            ];
+            line_elements.push(append_title.into());
+
+            let append_interpret = vec![
+                "Interpret: ".yellow().bold(),
+                next.interpret.clone().as_str().to_owned().into()
+            ];
+            line_elements.push(append_interpret.into());
+        }
+
+        Paragraph::new(line_elements)
         .block(title_block("Current Title"))
         .gray()
         .render(area, buf);
@@ -242,8 +265,15 @@ impl App {
             total_num: self.titles.titles.len() as u8,
         };
 
+        let next = if (self.title as usize) < self.titles.titles.len() - 1 {
+            Some(self.titles.titles[self.title as usize + 1].clone()) 
+        } else {
+            None
+        };
+
         let song_info = SongInfo {
             title: self.titles.titles[self.title as usize].clone(),
+            next,
             grading: self.current_grading.clone(),
         };
 
