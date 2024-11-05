@@ -181,29 +181,23 @@ impl Widget for SongInfo {
         ];
 
         if let Some(next) = self.next {
-
             line_elements.push(Line::from(vec![]));
-            line_elements.push(Line::from(vec![
-                "Coming up: ".gray().bold()
-            ]));
+            line_elements.push(Line::from(vec!["Coming up: ".gray().bold()]));
 
-            let append_title = vec![
-                "Interpret: ".blue().bold(),
-                next.title.clone().as_str().to_owned().into()
-            ];
+            let append_title = vec!["Interpret: ".blue().bold(), next.title.to_string().into()];
             line_elements.push(append_title.into());
 
             let append_interpret = vec![
                 "Interpret: ".yellow().bold(),
-                next.interpret.clone().as_str().to_owned().into()
+                next.interpret.to_string().into(),
             ];
             line_elements.push(append_interpret.into());
         }
 
         Paragraph::new(line_elements)
-        .block(title_block("Current Title"))
-        .gray()
-        .render(area, buf);
+            .block(title_block("Current Title"))
+            .gray()
+            .render(area, buf);
     }
 }
 
@@ -266,7 +260,7 @@ impl App {
         };
 
         let next = if (self.title as usize) < self.titles.titles.len() - 1 {
-            Some(self.titles.titles[self.title as usize + 1].clone()) 
+            Some(self.titles.titles[self.title as usize + 1].clone())
         } else {
             None
         };
@@ -298,14 +292,14 @@ impl App {
             AppEvent::ClientUpdate => {}
             AppEvent::CrossTerm(event) => match event {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                    self.match_key_event(key_event);
+                    self.match_key_event(key_event)?;
                 }
                 _ => {}
             },
         }
         Ok(())
     }
-    fn match_key_event(&mut self, event: KeyEvent) {
+    fn match_key_event(&mut self, event: KeyEvent) -> Result<(), Box<dyn Error>> {
         match event.code {
             KeyCode::Char('o') => {
                 self.pause();
@@ -316,7 +310,7 @@ impl App {
             KeyCode::Char('t') => {
                 if !self.transfered {
                     self.transfered = true;
-                    self.transfer_file();
+                    self.transfer_file()?;
                 }
             }
             KeyCode::Char('a') => {
@@ -332,7 +326,7 @@ impl App {
                 self.grade_interpret(true);
             }
             KeyCode::Char('n') => {
-                self.next().unwrap();
+                self.next()?;
             }
             KeyCode::Char('r') => {
                 self.repeat();
@@ -342,6 +336,7 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
     }
     fn play(&mut self) {
         if !self.playing && self.transfered {
@@ -403,8 +398,9 @@ impl App {
     fn grade_interpret(&mut self, grade: bool) {
         self.current_grading.interpret = Some(grade);
     }
-    fn transfer_file(&mut self) {
-        self.send_command(Command::Transfer).unwrap();
+    fn transfer_file(&mut self) -> Result<(), Box<dyn Error>> {
+        self.send_command(Command::Transfer)?;
+        Ok(())
     }
     fn send_command(&mut self, command: Command) -> Result<(), Box<dyn Error>> {
         let numeric: u8 = match command {
@@ -434,16 +430,17 @@ impl App {
     }
 }
 
-fn read_nickname(stream: &mut TcpStream) -> String {
+fn read_nickname(stream: &mut TcpStream) -> Result<String, Box<dyn Error>> {
     let mut bytes_to_read = [0_u8; 64 / 8];
-    stream.read_exact(&mut bytes_to_read).unwrap();
+    stream.read_exact(&mut bytes_to_read)?;
 
     let length_numeric = u64::from_be_bytes(bytes_to_read);
     let mut buffer = vec![0_u8; length_numeric as usize];
 
-    stream.read_exact(&mut buffer).unwrap();
+    stream.read_exact(&mut buffer)?;
 
-    String::from_utf8(buffer).unwrap()
+    let nickname = String::from_utf8(buffer)?;
+    Ok(nickname)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -462,16 +459,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            let nickname = read_nickname(&mut stream);
-            let client = Client { nickname, stream };
-            acceptor.lock().unwrap().push(client);
-            t1.send(AppEvent::ClientUpdate).unwrap();
+            if let Ok(nickname) = read_nickname(&mut stream) {
+                let client = Client { nickname, stream };
+                acceptor.lock().unwrap().push(client);
+                if !t1.send(AppEvent::ClientUpdate).is_ok() {
+                    break;
+                }
+            }
         }
     });
 
     thread::spawn(move || loop {
-        let event = event::read().unwrap();
-        t2.send(AppEvent::CrossTerm(event)).unwrap();
+        if let Ok(event) = event::read() {
+            if !t2.send(AppEvent::CrossTerm(event)).is_ok() {
+                break;
+            }
+        } else {
+            break;
+        }
     });
 
     let _app_result = App {
