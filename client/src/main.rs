@@ -17,6 +17,7 @@ use std::{
     io::{self, Cursor, ErrorKind, Read, Write},
     net::TcpStream,
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 enum Command {
@@ -24,11 +25,13 @@ enum Command {
     Transfer,
     Pause,
     Repeat,
+    Reveal
 }
 
 enum AppEvent {
     Command(Command),
     SongData(Vec<u8>),
+    TitleGrading(TitleGrading),
     CrossTerm(crossterm::event::Event),
     Disconnected,
 }
@@ -38,6 +41,7 @@ enum AppState {
     Disconnected,
     Paused,
     Playing,
+    Revealing
 }
 
 impl Display for AppState {
@@ -47,6 +51,7 @@ impl Display for AppState {
             AppState::Disconnected => "DISCONNECTED",
             AppState::Paused => "PAUSED",
             AppState::Playing => "PLAYING",
+            AppState::Revealing => "REVEALING"
         };
         f.write_str(display)?;
         Ok(())
@@ -60,6 +65,7 @@ struct App {
     stream: Option<thread::JoinHandle<()>>,
     event_sender: Sender<AppEvent>,
     current_song: Option<Vec<u8>>,
+    current_title_grading: Option<TitleGrading>,
     sink: Sink,
     volume: f32,
     exit: bool,
@@ -93,6 +99,44 @@ impl Widget for ServerPopup {
     }
 }
 
+impl Widget for TitleGrading {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let block = Block::bordered().title(" Result from previous title ");
+
+        let title = self.title.as_str().gray().bold();
+        let title_guess = if self.title_grading {
+            "correct".green().bold()
+        }
+        else {
+            "incorrect".red().bold()
+        };
+
+        let interpret = self.interpret.as_str().gray().bold();
+        let interpret_guess = if self.interpret_grading {
+            "correct".green().bold()
+        }
+        else {
+            "incorrect".red().bold()
+        };
+
+        Paragraph::new(vec![
+            Line::from(vec!["Title: ".blue(), title, " - ".into(), title_guess]),
+            Line::from(vec!["Interpret: ".yellow(), interpret, " - ".into(), interpret_guess])
+            ])
+            .block(block)
+            .gray()
+            .render(area, buf);
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct TitleGrading {
+    title: String,
+    interpret: String,
+    title_grading: bool,
+    interpret_grading: bool
+}
+
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<(), Box<dyn Error>> {
         while !self.exit {
@@ -107,7 +151,7 @@ impl App {
         let layout =
             Layout::vertical(vec![Constraint::Percentage(80), Constraint::Fill(1)]).split(area);
 
-        let show_popup = matches!(self.state, AppState::EnterNickname | AppState::Disconnected);
+        let show_popup = matches!(self.state, AppState::EnterNickname | AppState::Disconnected | AppState::Revealing);
 
         let block = Block::bordered().title(" Music Quiz Client ");
         Paragraph::new(vec![
@@ -153,7 +197,10 @@ impl App {
                         },
                         area,
                     );
-                }
+                },
+                AppState::Revealing => {
+                    frame.render_widget(self.current_title_grading.clone().unwrap(), area);
+                },
                 _ => {}
             }
         }
@@ -169,12 +216,17 @@ impl App {
                         if let Some(song) = self.current_song.clone() {
                             self.append_song(song)?;
                         }
-                    }
+                    },
+                    Command::Reveal => { /*Should also not happen TM*/ }
                 }
             }
             AppEvent::SongData(song) => {
                 self.current_song = Some(song.clone());
                 self.append_song(song)?;
+            }
+            AppEvent::TitleGrading(title_grading) => {
+                self.current_title_grading = Some(title_grading);
+                self.state = AppState::Revealing;
             }
             AppEvent::CrossTerm(event) => match event {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
@@ -281,7 +333,11 @@ impl App {
             if let Command::Transfer = command {
                 let song = read_data(&mut stream)?;
                 event = AppEvent::SongData(song);
+            } else if let Command::Reveal = command {
+                let reveal_data = read_title_grading(&mut stream)?;
+                event = AppEvent::TitleGrading(reveal_data);
             }
+
             sender.send(event)?;
         }
     }
@@ -365,6 +421,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         stream: None,
         event_sender: t1,
         current_song: None,
+        current_title_grading: None,
         sink,
         volume: 0.5,
         exit: false,
@@ -386,6 +443,7 @@ fn read_command(stream: &mut TcpStream) -> Result<Command, Box<dyn Error>> {
         2 => Ok(Command::Transfer),
         3 => Ok(Command::Pause),
         4 => Ok(Command::Repeat),
+        5 => Ok(Command::Reveal),
         _ => Err(Box::new(io::Error::new(
             ErrorKind::Other,
             "Invalid Command",
@@ -405,6 +463,20 @@ fn read_data(stream: &mut TcpStream) -> Result<Vec<u8>, Box<dyn Error>> {
 
     //println!("I have read the data!");
     Ok(data)
+}
+
+fn read_title_grading(stream: &mut TcpStream) -> Result<TitleGrading, Box<dyn Error>> {
+    let mut bytes_to_read = [0_u8; 64 / 8];
+    stream.read_exact(&mut bytes_to_read)?;
+    let bytes = u64::from_be_bytes(bytes_to_read);
+
+    let mut data = vec![0_u8; bytes as usize];
+    stream.read_exact(&mut data)?;
+
+    let parse_string = String::from_utf8(data)?;
+    let title_grading: TitleGrading = serde_json::from_str(&parse_string)?;
+
+    Ok(title_grading)
 }
 
 fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {

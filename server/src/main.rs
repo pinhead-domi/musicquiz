@@ -1,3 +1,4 @@
+use core::num;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -7,7 +8,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, usize};
 
 use ratatui::widgets::List;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
@@ -20,13 +21,30 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
-use log::{error, LevelFilter};
+use log::LevelFilter;
+
+trait LogExt {
+    fn log(self) -> Self;
+}
+
+impl<T, E> LogExt for Result<T, E>
+where
+    E: std::fmt::Display,
+{
+    fn log(self) -> Self {
+        if let Err(e) = &self {
+            log::error!("{}", e)
+        }
+        self
+    }
+}
 
 enum Command {
     Transfer,
     Play,
     Pause,
     Repeat,
+    Reveal,
 }
 
 enum AppEvent {
@@ -280,6 +298,7 @@ impl App {
         let nicknames: Vec<String> = self
             .handles
             .lock()
+            .log()
             .unwrap()
             .iter()
             .map(|client| client.nickname.clone())
@@ -357,6 +376,18 @@ impl App {
 
         if self.current_grading.title.is_some() && self.current_grading.interpret.is_some() {
             self.grading_history.push(self.current_grading.clone());
+
+            let title = &self.titles.titles[self.title as usize];
+            log::info!(
+                "Grading for song {} - {}: Title: {}, Interpret: {}",
+                title.title,
+                title.interpret,
+                self.current_grading.title.unwrap(),
+                self.current_grading.interpret.unwrap()
+            );
+
+            self.send_command(Command::Reveal)?;
+
             self.reset_grading();
             if (self.title as usize) < self.titles.titles.len() - 1 {
                 self.transfered = false;
@@ -410,19 +441,34 @@ impl App {
             Command::Transfer => 2,
             Command::Pause => 3,
             Command::Repeat => 4,
+            Command::Reveal => 5,
         };
 
         let bytes = numeric.to_be_bytes();
 
-        self.handles.lock().unwrap().retain_mut(|client| {
+        self.handles.lock().log().unwrap().retain_mut(|client| {
             let mut keep = true;
             keep &= client.stream.write_all(&bytes).is_ok();
             if keep && numeric == 2 {
                 keep &= stream_file(
                     &mut client.stream,
-                    format!("/Users/dominik/Projects/musicquiz/{}.mp3", self.title + 1).as_str(),
+                    format!(
+                        "C:/Users/Dominik Haring/Documents/GitHub/musicquiz/{}.mp3",
+                        self.title + 1
+                    )
+                    .as_str(),
                 )
                 .is_ok();
+            } else if keep && numeric == 5 {
+                keep &= stream_title_grading(
+                    &mut client.stream,
+                    self.current_grading.clone(),
+                    self.titles.titles[self.title as usize].clone(),
+                )
+                .is_ok();
+            }
+            if !keep {
+                log::info!("Client {:?} will be dropped", client);
             }
 
             keep
@@ -448,7 +494,9 @@ fn read_nickname(stream: &mut TcpStream) -> Result<String, Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     simple_logging::log_to_file("test.log", LevelFilter::Info)?;
 
-    let file_content = match fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json") {
+    let file_content = match fs::read_to_string(
+        "C:/Users/Dominik Haring/Documents/GitHub/musicquiz/titles.json",
+    ) {
         Ok(content) => content,
         Err(e) => {
             log::error!("Could not open title list file: [{}]", e.to_string());
@@ -483,11 +531,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            log::info!("New client connected at {}", stream.peer_addr().unwrap());
+            if let Ok(addr) = stream.peer_addr() {
+                log::info!("New client connected at {}", addr);
+            }
+
             if let Ok(nickname) = read_nickname(&mut stream) {
+                log::info!("Client connected with nickname {}", &nickname);
+
                 let client = Client { nickname, stream };
-                acceptor.lock().unwrap().push(client);
+                acceptor.lock().log().unwrap().push(client);
                 if !t1.send(AppEvent::ClientUpdate).is_ok() {
+                    log::error!("Unable to send AppEvents to worker thread, no new connections will we accepted!");
                     break;
                 }
             }
@@ -495,16 +549,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     thread::spawn(move || loop {
-        if let Ok(event) = event::read() {
-            if !t2.send(AppEvent::CrossTerm(event)).is_ok() {
+        match event::read() {
+            Ok(event) => {
+                if let Err(e) = t2.send(AppEvent::CrossTerm(event)) {
+                    log::error!("{}: keystrokes will no longer be forwarded", e);
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!("{}: keystrokes will no longer be forwarded", e);
                 break;
             }
-        } else {
-            break;
         }
     });
 
-    let _app_result = App {
+    let app_result = App {
         title: 0,
         playing: false,
         transfered: false,
@@ -518,10 +577,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         grading_history: Vec::new(),
     }
-    .run(&mut terminal);
+    .run(&mut terminal)
+    .log();
 
     ratatui::restore();
-    Ok(())
+    return app_result;
 }
 
 fn stream_file(stream: &mut TcpStream, path: &str) -> Result<(), Box<dyn Error>> {
@@ -535,6 +595,37 @@ fn stream_file(stream: &mut TcpStream, path: &str) -> Result<(), Box<dyn Error>>
 
     stream.write_all(&size_as_bytes)?;
     stream.write_all(&bytes)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TransferTitleGrading {
+    title: String,
+    interpret: String,
+    title_grading: bool,
+    interpret_grading: bool,
+}
+
+fn stream_title_grading(
+    stream: &mut TcpStream,
+    grading: Grading,
+    title: TitleInfo,
+) -> Result<(), Box<dyn Error>> {
+    let transfer_item = TransferTitleGrading {
+        title: title.title,
+        interpret: title.interpret,
+        title_grading: grading.title.unwrap_or(false),
+        interpret_grading: grading.interpret.unwrap_or(false),
+    };
+    let transfer_string = serde_json::to_string(&transfer_item)?;
+    let transfer_data = transfer_string.as_bytes();
+    let transfer_size = transfer_data.len().to_be_bytes();
+
+    log::info!("Transfering {} to {:?}", transfer_string, stream);
+
+    stream.write_all(&transfer_size)?;
+    stream.write_all(&transfer_data)?;
 
     Ok(())
 }
