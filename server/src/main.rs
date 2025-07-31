@@ -20,6 +20,8 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use log::{error, LevelFilter};
+
 enum Command {
     Transfer,
     Play,
@@ -444,11 +446,33 @@ fn read_nickname(stream: &mut TcpStream) -> Result<String, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let file_content = fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json")?;
-    let titles: TitleList = serde_json::from_str(&file_content)?;
+    simple_logging::log_to_file("test.log", LevelFilter::Info)?;
+
+    let file_content = match fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json") {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Could not open title list file: [{}]", e.to_string());
+            return Err(e.into());
+        }
+    };
+    let titles: TitleList = match serde_json::from_str(&file_content) {
+        Ok(titles) => titles,
+        Err(e) => {
+            log::error!("Could not parse the title list file: [{}]", e.to_string());
+            return Err(e.into());
+        }
+    };
+
+    log::info!("Title list loaded and parsed successfully!");
 
     let mut terminal = ratatui::init();
-    let listener = TcpListener::bind("0.0.0.0:6969")?;
+    let listener = match TcpListener::bind("0.0.0.0:59683") {
+        Ok(listener) => listener,
+        Err(e) => {
+            log::error!("Could not open the given TCP port: [{}]", e.to_string());
+            return Err(e.into());
+        }
+    };
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
@@ -459,6 +483,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
+            log::info!("New client connected at {}", stream.peer_addr().unwrap());
             if let Ok(nickname) = read_nickname(&mut stream) {
                 let client = Client { nickname, stream };
                 acceptor.lock().unwrap().push(client);
