@@ -193,9 +193,9 @@ impl App {
                 _ => {}
             },
             AppEvent::Disconnected => {
+                self.stream.take().map(|stream| stream.join());
                 self.clear();
                 self.state = AppState::Disconnected;
-                self.stream = None;
             }
         }
 
