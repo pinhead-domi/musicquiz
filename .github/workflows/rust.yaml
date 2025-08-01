@@ -2,9 +2,8 @@ name: Rust
 
 on:
   push:
-    branches: [ "main", "feature/ci", "road-to-v0.1" ]
-  pull_request:
-    branches: [ "main", "feature/ci" ]
+    tags:
+      - "*"
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,10 +19,23 @@ jobs:
       run: cargo build -p server --release
     - name: Build
       run: cargo build -p client --release
-    - name: Archive build artifacts
-      uses: actions/upload-artifact@v4
+    - name: release
+      uses: actions/create-release@v1
+      id: create_release
       with:
-        name: dist-server-client
-        path: |
-          target/release/server.exe
-          target/release/client.exe
+        draft: false
+        prerelease: false
+        release_name: ${{ github.ref }}
+        tag_name: ${{ github.ref }}
+        body_path: CHANGELOG.md
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+    - name: upload windows artifact
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: target/release/server.exe
+        asset_name: server.exe
+        asset_content_type: application/zip
