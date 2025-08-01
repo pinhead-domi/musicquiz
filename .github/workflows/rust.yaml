@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "*"
+      
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,17 +22,14 @@ jobs:
       run: cargo build -p server --release
     - name: Build
       run: cargo build -p client --release
-    - name: release
-      uses: actions/create-release@v1
-      id: create_release
+    - name: Create Release
+      uses: ncipollo/release-action@v1
       with:
-        draft: false
-        prerelease: false
-        release_name: ${{ github.ref }}
-        tag_name: ${{ github.ref }}
-        body_path: CHANGELOG.md
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
+        tag: ${{ github.ref_name }}
+        name: ${{ github.ref_name }}
+        bodyFile: CHANGELOG.md
+        artifacts: "target/release/server.exe"
+        token: ${{ secrets.GITHUB_TOKEN }}
     - name: upload windows artifact
       uses: actions/upload-release-asset@v1
       env:
