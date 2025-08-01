@@ -1,4 +1,3 @@
-use core::num;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -232,6 +231,7 @@ struct App {
     titles: TitleList,
     current_grading: Grading,
     grading_history: Vec<Grading>,
+    game_over: bool,
 }
 
 impl App {
@@ -285,13 +285,16 @@ impl App {
             None
         };
 
-        let song_info = SongInfo {
-            title: self.titles.titles[self.title as usize].clone(),
-            next,
-            grading: self.current_grading.clone(),
-        };
+        if (self.title as usize) < self.titles.titles.len() {
+            let song_info = SongInfo {
+                title: self.titles.titles[self.title as usize].clone(),
+                next,
+                grading: self.current_grading.clone(),
+            };
 
-        frame.render_widget(song_info, outer_layout[0]);
+            frame.render_widget(song_info, outer_layout[0]);
+        }
+
         frame.render_widget(connection_info, inner_layout[0]);
         frame.render_widget(game_info, inner_layout[1]);
 
@@ -321,42 +324,52 @@ impl App {
         Ok(())
     }
     fn match_key_event(&mut self, event: KeyEvent) -> Result<(), Box<dyn Error>> {
-        match event.code {
-            KeyCode::Char('o') => {
-                self.pause();
-            }
-            KeyCode::Char('p') => {
-                self.play();
-            }
-            KeyCode::Char('t') => {
-                if !self.transfered {
-                    self.transfered = true;
-                    self.transfer_file()?;
+        if !self.game_over {
+            match event.code {
+                KeyCode::Char('o') => {
+                    self.pause();
                 }
+                KeyCode::Char('p') => {
+                    self.play();
+                }
+                KeyCode::Char('t') => {
+                    if !self.transfered {
+                        self.transfered = true;
+                        self.transfer_file()?;
+                    }
+                }
+                KeyCode::Char('a') => {
+                    self.grade_title(false);
+                }
+                KeyCode::Char('s') => {
+                    self.grade_title(true);
+                }
+                KeyCode::Char('y') => {
+                    self.grade_interpret(false);
+                }
+                KeyCode::Char('x') => {
+                    self.grade_interpret(true);
+                }
+                KeyCode::Char('n') => {
+                    self.next()?;
+                }
+                KeyCode::Char('r') => {
+                    self.repeat();
+                }
+                KeyCode::Char('q') => {
+                    self.exit = true;
+                }
+                _ => {}
             }
-            KeyCode::Char('a') => {
-                self.grade_title(false);
+        } else {
+            match event.code {
+                KeyCode::Char('q') => {
+                    self.exit = true;
+                }
+                _ => {}
             }
-            KeyCode::Char('s') => {
-                self.grade_title(true);
-            }
-            KeyCode::Char('y') => {
-                self.grade_interpret(false);
-            }
-            KeyCode::Char('x') => {
-                self.grade_interpret(true);
-            }
-            KeyCode::Char('n') => {
-                self.next()?;
-            }
-            KeyCode::Char('r') => {
-                self.repeat();
-            }
-            KeyCode::Char('q') => {
-                self.exit = true;
-            }
-            _ => {}
         }
+
         Ok(())
     }
     fn play(&mut self) {
@@ -375,8 +388,6 @@ impl App {
         self.playing = false;
 
         if self.current_grading.title.is_some() && self.current_grading.interpret.is_some() {
-            self.grading_history.push(self.current_grading.clone());
-
             let title = &self.titles.titles[self.title as usize];
             log::info!(
                 "Grading for song {} - {}: Title: {}, Interpret: {}",
@@ -388,11 +399,16 @@ impl App {
 
             self.send_command(Command::Reveal)?;
 
-            self.reset_grading();
             if (self.title as usize) < self.titles.titles.len() - 1 {
                 self.transfered = false;
                 self.title += 1;
+            } else if (self.title as usize) == self.titles.titles.len() - 1 {
+                self.title += 1;
+                self.game_over = true;
             }
+
+            self.grading_history.push(self.current_grading.clone());
+            self.reset_grading();
         }
 
         Ok(())
@@ -576,6 +592,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             interpret: None,
         },
         grading_history: Vec::new(),
+        game_over: false,
     }
     .run(&mut terminal)
     .log();

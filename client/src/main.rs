@@ -7,6 +7,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Gauge, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
 use rodio::{Decoder, OutputStream, Sink};
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -17,7 +18,6 @@ use std::{
     io::{self, Cursor, ErrorKind, Read, Write},
     net::TcpStream,
 };
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 enum Command {
@@ -25,7 +25,7 @@ enum Command {
     Transfer,
     Pause,
     Repeat,
-    Reveal
+    Reveal,
 }
 
 enum AppEvent {
@@ -41,7 +41,7 @@ enum AppState {
     Disconnected,
     Paused,
     Playing,
-    Revealing
+    Revealing,
 }
 
 impl Display for AppState {
@@ -51,7 +51,7 @@ impl Display for AppState {
             AppState::Disconnected => "DISCONNECTED",
             AppState::Paused => "PAUSED",
             AppState::Playing => "PLAYING",
-            AppState::Revealing => "REVEALING"
+            AppState::Revealing => "REVEALING",
         };
         f.write_str(display)?;
         Ok(())
@@ -106,26 +106,29 @@ impl Widget for TitleGrading {
         let title = self.title.as_str().gray().bold();
         let title_guess = if self.title_grading {
             "correct".green().bold()
-        }
-        else {
+        } else {
             "incorrect".red().bold()
         };
 
         let interpret = self.interpret.as_str().gray().bold();
         let interpret_guess = if self.interpret_grading {
             "correct".green().bold()
-        }
-        else {
+        } else {
             "incorrect".red().bold()
         };
 
         Paragraph::new(vec![
             Line::from(vec!["Title: ".blue(), title, " - ".into(), title_guess]),
-            Line::from(vec!["Interpret: ".yellow(), interpret, " - ".into(), interpret_guess])
-            ])
-            .block(block)
-            .gray()
-            .render(area, buf);
+            Line::from(vec![
+                "Interpret: ".yellow(),
+                interpret,
+                " - ".into(),
+                interpret_guess,
+            ]),
+        ])
+        .block(block)
+        .gray()
+        .render(area, buf);
     }
 }
 
@@ -134,7 +137,7 @@ struct TitleGrading {
     title: String,
     interpret: String,
     title_grading: bool,
-    interpret_grading: bool
+    interpret_grading: bool,
 }
 
 impl App {
@@ -145,13 +148,16 @@ impl App {
         }
         Ok(())
     }
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
         let layout =
             Layout::vertical(vec![Constraint::Percentage(80), Constraint::Fill(1)]).split(area);
 
-        let show_popup = matches!(self.state, AppState::EnterNickname | AppState::Disconnected | AppState::Revealing);
+        let show_popup = matches!(
+            self.state,
+            AppState::EnterNickname | AppState::Disconnected | AppState::Revealing
+        );
 
         let block = Block::bordered().title(" Music Quiz Client ");
         Paragraph::new(vec![
@@ -197,10 +203,10 @@ impl App {
                         },
                         area,
                     );
-                },
+                }
                 AppState::Revealing => {
                     frame.render_widget(self.current_title_grading.clone().unwrap(), area);
-                },
+                }
                 _ => {}
             }
         }
@@ -216,7 +222,7 @@ impl App {
                         if let Some(song) = self.current_song.clone() {
                             self.append_song(song)?;
                         }
-                    },
+                    }
                     Command::Reveal => { /*Should also not happen TM*/ }
                 }
             }
