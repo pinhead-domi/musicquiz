@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, usize};
 
 use ratatui::widgets::List;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
@@ -20,11 +20,31 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use chrono::{Datelike, Local, Timelike};
+use log::LevelFilter;
+
+trait LogExt {
+    fn log(self) -> Self;
+}
+
+impl<T, E> LogExt for Result<T, E>
+where
+    E: std::fmt::Display,
+{
+    fn log(self) -> Self {
+        if let Err(e) = &self {
+            log::error!("{}", e)
+        }
+        self
+    }
+}
+
 enum Command {
     Transfer,
     Play,
     Pause,
     Repeat,
+    Reveal,
 }
 
 enum AppEvent {
@@ -128,7 +148,7 @@ impl Widget for GameInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Grading {
     interpret: Option<bool>,
     title: Option<bool>,
@@ -181,29 +201,23 @@ impl Widget for SongInfo {
         ];
 
         if let Some(next) = self.next {
-
             line_elements.push(Line::from(vec![]));
-            line_elements.push(Line::from(vec![
-                "Coming up: ".gray().bold()
-            ]));
+            line_elements.push(Line::from(vec!["Coming up: ".gray().bold()]));
 
-            let append_title = vec![
-                "Interpret: ".blue().bold(),
-                next.title.clone().as_str().to_owned().into()
-            ];
+            let append_title = vec!["Interpret: ".blue().bold(), next.title.to_string().into()];
             line_elements.push(append_title.into());
 
             let append_interpret = vec![
                 "Interpret: ".yellow().bold(),
-                next.interpret.clone().as_str().to_owned().into()
+                next.interpret.to_string().into(),
             ];
             line_elements.push(append_interpret.into());
         }
 
         Paragraph::new(line_elements)
-        .block(title_block("Current Title"))
-        .gray()
-        .render(area, buf);
+            .block(title_block("Current Title"))
+            .gray()
+            .render(area, buf);
     }
 }
 
@@ -218,6 +232,7 @@ struct App {
     titles: TitleList,
     current_grading: Grading,
     grading_history: Vec<Grading>,
+    game_over: bool,
 }
 
 impl App {
@@ -266,24 +281,28 @@ impl App {
         };
 
         let next = if (self.title as usize) < self.titles.titles.len() - 1 {
-            Some(self.titles.titles[self.title as usize + 1].clone()) 
+            Some(self.titles.titles[self.title as usize + 1].clone())
         } else {
             None
         };
 
-        let song_info = SongInfo {
-            title: self.titles.titles[self.title as usize].clone(),
-            next,
-            grading: self.current_grading.clone(),
-        };
+        if (self.title as usize) < self.titles.titles.len() {
+            let song_info = SongInfo {
+                title: self.titles.titles[self.title as usize].clone(),
+                next,
+                grading: self.current_grading.clone(),
+            };
 
-        frame.render_widget(song_info, outer_layout[0]);
+            frame.render_widget(song_info, outer_layout[0]);
+        }
+
         frame.render_widget(connection_info, inner_layout[0]);
         frame.render_widget(game_info, inner_layout[1]);
 
         let nicknames: Vec<String> = self
             .handles
             .lock()
+            .log()
             .unwrap()
             .iter()
             .map(|client| client.nickname.clone())
@@ -298,50 +317,61 @@ impl App {
             AppEvent::ClientUpdate => {}
             AppEvent::CrossTerm(event) => match event {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                    self.match_key_event(key_event);
+                    self.match_key_event(key_event)?;
                 }
                 _ => {}
             },
         }
         Ok(())
     }
-    fn match_key_event(&mut self, event: KeyEvent) {
-        match event.code {
-            KeyCode::Char('o') => {
-                self.pause();
-            }
-            KeyCode::Char('p') => {
-                self.play();
-            }
-            KeyCode::Char('t') => {
-                if !self.transfered {
-                    self.transfered = true;
-                    self.transfer_file();
+    fn match_key_event(&mut self, event: KeyEvent) -> Result<(), Box<dyn Error>> {
+        if !self.game_over {
+            match event.code {
+                KeyCode::Char('o') => {
+                    self.pause();
                 }
+                KeyCode::Char('p') => {
+                    self.play();
+                }
+                KeyCode::Char('t') => {
+                    if !self.transfered {
+                        self.transfered = true;
+                        self.transfer_file()?;
+                    }
+                }
+                KeyCode::Char('a') => {
+                    self.grade_title(false);
+                }
+                KeyCode::Char('s') => {
+                    self.grade_title(true);
+                }
+                KeyCode::Char('y') => {
+                    self.grade_interpret(false);
+                }
+                KeyCode::Char('x') => {
+                    self.grade_interpret(true);
+                }
+                KeyCode::Char('n') => {
+                    self.next()?;
+                }
+                KeyCode::Char('r') => {
+                    self.repeat();
+                }
+                KeyCode::Char('q') => {
+                    self.exit = true;
+                }
+                _ => {}
             }
-            KeyCode::Char('a') => {
-                self.grade_title(false);
+        } else {
+            match event.code {
+                KeyCode::Char('q') => {
+                    self.exit = true;
+                }
+                _ => {}
             }
-            KeyCode::Char('s') => {
-                self.grade_title(true);
-            }
-            KeyCode::Char('y') => {
-                self.grade_interpret(false);
-            }
-            KeyCode::Char('x') => {
-                self.grade_interpret(true);
-            }
-            KeyCode::Char('n') => {
-                self.next().unwrap();
-            }
-            KeyCode::Char('r') => {
-                self.repeat();
-            }
-            KeyCode::Char('q') => {
-                self.exit = true;
-            }
-            _ => {}
         }
+
+        Ok(())
     }
     fn play(&mut self) {
         if !self.playing && self.transfered {
@@ -359,12 +389,27 @@ impl App {
         self.playing = false;
 
         if self.current_grading.title.is_some() && self.current_grading.interpret.is_some() {
-            self.grading_history.push(self.current_grading.clone());
-            self.reset_grading();
+            let title = &self.titles.titles[self.title as usize];
+            log::info!(
+                "Grading for song {} - {}: Title: {}, Interpret: {}",
+                title.title,
+                title.interpret,
+                self.current_grading.title.unwrap(),
+                self.current_grading.interpret.unwrap()
+            );
+
+            self.send_command(Command::Reveal)?;
+
             if (self.title as usize) < self.titles.titles.len() - 1 {
                 self.transfered = false;
                 self.title += 1;
+            } else if (self.title as usize) == self.titles.titles.len() - 1 {
+                self.title += 1;
+                self.game_over = true;
             }
+
+            self.grading_history.push(self.current_grading.clone());
+            self.reset_grading();
         }
 
         Ok(())
@@ -403,8 +448,9 @@ impl App {
     fn grade_interpret(&mut self, grade: bool) {
         self.current_grading.interpret = Some(grade);
     }
-    fn transfer_file(&mut self) {
-        self.send_command(Command::Transfer).unwrap();
+    fn transfer_file(&mut self) -> Result<(), Box<dyn Error>> {
+        self.send_command(Command::Transfer)?;
+        Ok(())
     }
     fn send_command(&mut self, command: Command) -> Result<(), Box<dyn Error>> {
         let numeric: u8 = match command {
@@ -412,19 +458,34 @@ impl App {
             Command::Transfer => 2,
             Command::Pause => 3,
             Command::Repeat => 4,
+            Command::Reveal => 5,
         };
 
         let bytes = numeric.to_be_bytes();
 
-        self.handles.lock().unwrap().retain_mut(|client| {
+        self.handles.lock().log().unwrap().retain_mut(|client| {
             let mut keep = true;
             keep &= client.stream.write_all(&bytes).is_ok();
             if keep && numeric == 2 {
                 keep &= stream_file(
                     &mut client.stream,
-                    format!("/Users/dominik/Projects/musicquiz/{}.mp3", self.title + 1).as_str(),
+                    format!(
+                        "C:/Users/Dominik Haring/Documents/GitHub/musicquiz/{}.mp3",
+                        self.title + 1
+                    )
+                    .as_str(),
                 )
                 .is_ok();
+            } else if keep && numeric == 5 {
+                keep &= stream_title_grading(
+                    &mut client.stream,
+                    self.current_grading.clone(),
+                    self.titles.titles[self.title as usize].clone(),
+                )
+                .is_ok();
+            }
+            if !keep {
+                log::info!("Client {:?} will be dropped", client);
             }
 
             keep
@@ -434,24 +495,60 @@ impl App {
     }
 }
 
-fn read_nickname(stream: &mut TcpStream) -> String {
+fn read_nickname(stream: &mut TcpStream) -> Result<String, Box<dyn Error>> {
     let mut bytes_to_read = [0_u8; 64 / 8];
-    stream.read_exact(&mut bytes_to_read).unwrap();
+    stream.read_exact(&mut bytes_to_read)?;
 
     let length_numeric = u64::from_be_bytes(bytes_to_read);
     let mut buffer = vec![0_u8; length_numeric as usize];
 
-    stream.read_exact(&mut buffer).unwrap();
+    stream.read_exact(&mut buffer)?;
 
-    String::from_utf8(buffer).unwrap()
+    let nickname = String::from_utf8(buffer)?;
+    Ok(nickname)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let file_content = fs::read_to_string("/Users/dominik/Projects/musicquiz/titles.json")?;
-    let titles: TitleList = serde_json::from_str(&file_content)?;
+    let now = Local::now();
+    simple_logging::log_to_file(
+        format!(
+            "{}-{}-{}-{}_server.log",
+            now.year(),
+            now.month(),
+            now.day(),
+            now.minute()
+        )
+        .as_str(),
+        LevelFilter::Info,
+    )?;
+
+    let file_content = match fs::read_to_string(
+        "C:/Users/Dominik Haring/Documents/GitHub/musicquiz/titles.json",
+    ) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Could not open title list file: [{}]", e.to_string());
+            return Err(e.into());
+        }
+    };
+    let titles: TitleList = match serde_json::from_str(&file_content) {
+        Ok(titles) => titles,
+        Err(e) => {
+            log::error!("Could not parse the title list file: [{}]", e.to_string());
+            return Err(e.into());
+        }
+    };
+
+    log::info!("Title list loaded and parsed successfully!");
 
     let mut terminal = ratatui::init();
-    let listener = TcpListener::bind("0.0.0.0:6969")?;
+    let listener = match TcpListener::bind("0.0.0.0:59683") {
+        Ok(listener) => listener,
+        Err(e) => {
+            log::error!("Could not open the given TCP port: [{}]", e.to_string());
+            return Err(e.into());
+        }
+    };
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
@@ -462,19 +559,39 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            let nickname = read_nickname(&mut stream);
-            let client = Client { nickname, stream };
-            acceptor.lock().unwrap().push(client);
-            t1.send(AppEvent::ClientUpdate).unwrap();
+            if let Ok(addr) = stream.peer_addr() {
+                log::info!("New client connected at {}", addr);
+            }
+
+            if let Ok(nickname) = read_nickname(&mut stream) {
+                log::info!("Client connected with nickname {}", &nickname);
+
+                let client = Client { nickname, stream };
+                acceptor.lock().log().unwrap().push(client);
+                if !t1.send(AppEvent::ClientUpdate).is_ok() {
+                    log::error!("Unable to send AppEvents to worker thread, no new connections will we accepted!");
+                    break;
+                }
+            }
         }
     });
 
     thread::spawn(move || loop {
-        let event = event::read().unwrap();
-        t2.send(AppEvent::CrossTerm(event)).unwrap();
+        match event::read() {
+            Ok(event) => {
+                if let Err(e) = t2.send(AppEvent::CrossTerm(event)) {
+                    log::error!("{}: keystrokes will no longer be forwarded", e);
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!("{}: keystrokes will no longer be forwarded", e);
+                break;
+            }
+        }
     });
 
-    let _app_result = App {
+    let mut app = App {
         title: 0,
         playing: false,
         transfered: false,
@@ -487,11 +604,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             interpret: None,
         },
         grading_history: Vec::new(),
-    }
-    .run(&mut terminal);
+        game_over: false,
+    };
+
+    let app_result = app.run(&mut terminal).log();
+
+    let grading_str = serde_json::to_string(&app.grading_history)?;
+    fs::write(
+        format!(
+            "{}-{}-{}-{}_results.log",
+            now.year(),
+            now.month(),
+            now.day(),
+            now.minute()
+        )
+        .as_str(),
+        grading_str,
+    )?;
 
     ratatui::restore();
-    Ok(())
+    return app_result;
 }
 
 fn stream_file(stream: &mut TcpStream, path: &str) -> Result<(), Box<dyn Error>> {
@@ -505,6 +637,37 @@ fn stream_file(stream: &mut TcpStream, path: &str) -> Result<(), Box<dyn Error>>
 
     stream.write_all(&size_as_bytes)?;
     stream.write_all(&bytes)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TransferTitleGrading {
+    title: String,
+    interpret: String,
+    title_grading: bool,
+    interpret_grading: bool,
+}
+
+fn stream_title_grading(
+    stream: &mut TcpStream,
+    grading: Grading,
+    title: TitleInfo,
+) -> Result<(), Box<dyn Error>> {
+    let transfer_item = TransferTitleGrading {
+        title: title.title,
+        interpret: title.interpret,
+        title_grading: grading.title.unwrap_or(false),
+        interpret_grading: grading.interpret.unwrap_or(false),
+    };
+    let transfer_string = serde_json::to_string(&transfer_item)?;
+    let transfer_data = transfer_string.as_bytes();
+    let transfer_size = transfer_data.len().to_be_bytes();
+
+    log::info!("Transfering {} to {:?}", transfer_string, stream);
+
+    stream.write_all(&transfer_size)?;
+    stream.write_all(&transfer_data)?;
 
     Ok(())
 }

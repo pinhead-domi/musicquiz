@@ -1,0 +1,34 @@
+name: Rust
+
+on:
+  push:
+    tags:
+      - "*"
+      
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build -p server --release
+    - name: Build
+      run: cargo build -p client --release
+    - name: Create Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: ${{ github.ref_name }}
+        name: ${{ github.ref_name }}
+        bodyFile: CHANGELOG.md
+        artifacts: |
+          target/release/server.exe,
+          target/release/client.exe
+        token: ${{ secrets.GITHUB_TOKEN }}

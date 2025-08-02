@@ -1,57 +1,64 @@
+use crossterm::event::{self, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::style::Stylize;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Clear, Gauge, Paragraph, Widget};
+use ratatui::{DefaultTerminal, Frame};
+use rodio::{Decoder, OutputStream, Sink};
+use serde::{Deserialize, Serialize};
+use std::fmt::{Display, Formatter};
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::thread;
 use std::{
     error::Error,
     io::{self, Cursor, ErrorKind, Read, Write},
     net::TcpStream,
 };
-use std::fmt::{Display, Formatter};
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
-use ratatui::{DefaultTerminal, Frame};
-use rodio::{Decoder, OutputStream, Sink};
-use std::sync::mpsc;
-use std::thread;
-use crossterm::event;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Clear, Paragraph, Widget, Gauge};
-use ratatui::style::Stylize;
+use copypasta::{ClipboardContext, ClipboardProvider};
 
 #[derive(Clone)]
 enum Command {
     Play,
     Transfer,
     Pause,
-    Repeat
+    Repeat,
+    Reveal,
 }
 
 enum AppEvent {
     Command(Command),
     SongData(Vec<u8>),
-    CrossTerm(crossterm::event::Event)
+    TitleGrading(TitleGrading),
+    CrossTerm(crossterm::event::Event),
+    Disconnected,
 }
 
-enum AppState{
+enum AppState {
     EnterNickname,
     Disconnected,
     Paused,
-    Playing
+    Playing,
+    Revealing,
 }
 
 impl Display for AppState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let display = match self {
-            AppState::EnterNickname => { "NICKNAME CONFIG" }
-            AppState::Disconnected => { "DISCONNECTED" }
-            AppState::Paused => { "PAUSED" }
-            AppState::Playing => { "PLAYING" }
+            AppState::EnterNickname => "NICKNAME CONFIG",
+            AppState::Disconnected => "DISCONNECTED",
+            AppState::Paused => "PAUSED",
+            AppState::Playing => "PLAYING",
+            AppState::Revealing => "REVEALING",
         };
         f.write_str(display)?;
         Ok(())
     }
 }
-struct App{
+struct App {
     connection_string: String,
     nickname: String,
     state: AppState,
@@ -59,39 +66,79 @@ struct App{
     stream: Option<thread::JoinHandle<()>>,
     event_sender: Sender<AppEvent>,
     current_song: Option<Vec<u8>>,
+    current_title_grading: Option<TitleGrading>,
     sink: Sink,
     volume: f32,
-    exit: bool
+    exit: bool,
 }
 
-struct NickNamePopup{
-    nickname: String
+struct NickNamePopup {
+    nickname: String,
 }
 
 impl Widget for NickNamePopup {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::bordered().title(" Enter Nickname ");
-        Paragraph::new(vec![
-            Line::from(vec![
-                self.nickname.as_str().gray().bold()
-            ])
-        ]).block(block).gray().render(area, buf);
+        Paragraph::new(vec![Line::from(vec![self.nickname.as_str().gray().bold()])])
+            .block(block)
+            .gray()
+            .render(area, buf);
     }
 }
 
-struct ServerPopup{
-    url: String
+struct ServerPopup {
+    url: String,
 }
 
 impl Widget for ServerPopup {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::bordered().title(" Enter Server Url ");
-        Paragraph::new(vec![
-            Line::from(vec![
-                self.url.as_str().gray().bold()
-            ])
-        ]).block(block).gray().render(area, buf);
+        Paragraph::new(vec![Line::from(vec![self.url.as_str().gray().bold()])])
+            .block(block)
+            .gray()
+            .render(area, buf);
     }
+}
+
+impl Widget for TitleGrading {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let block = Block::bordered().title(" Result from previous title ");
+
+        let title = self.title.as_str().gray().bold();
+        let title_guess = if self.title_grading {
+            "correct".green().bold()
+        } else {
+            "incorrect".red().bold()
+        };
+
+        let interpret = self.interpret.as_str().gray().bold();
+        let interpret_guess = if self.interpret_grading {
+            "correct".green().bold()
+        } else {
+            "incorrect".red().bold()
+        };
+
+        Paragraph::new(vec![
+            Line::from(vec!["Title: ".blue(), title, " - ".into(), title_guess]),
+            Line::from(vec![
+                "Interpret: ".yellow(),
+                interpret,
+                " - ".into(),
+                interpret_guess,
+            ]),
+        ])
+        .block(block)
+        .gray()
+        .render(area, buf);
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct TitleGrading {
+    title: String,
+    interpret: String,
+    title_grading: bool,
+    interpret_grading: bool,
 }
 
 impl App {
@@ -102,34 +149,40 @@ impl App {
         }
         Ok(())
     }
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
-        let layout = Layout::vertical(vec![
-            Constraint::Percentage(80),
-            Constraint::Fill(1)
-        ]).split(area);
+        let layout =
+            Layout::vertical(vec![Constraint::Percentage(80), Constraint::Fill(1)]).split(area);
 
-        let show_popup = matches!(self.state, AppState::EnterNickname | AppState::Disconnected);
+        let show_popup = matches!(
+            self.state,
+            AppState::EnterNickname | AppState::Disconnected | AppState::Revealing
+        );
 
         let block = Block::bordered().title(" Music Quiz Client ");
         Paragraph::new(vec![
             Line::from(vec![
                 "Nickname: ".into(),
-                self.nickname.clone().yellow().bold()
+                self.nickname.clone().yellow().bold(),
             ]),
             Line::from(vec![
                 "Server url: ".into(),
-                self.connection_string.clone().blue().bold()
+                self.connection_string.clone().blue().bold(),
             ]),
             Line::from(vec![
                 "Status: ".into(),
-                format!("{}", &self.state).green().bold()
-            ])
-        ]).block(block).render(layout[0], frame.buffer_mut());
+                format!("{}", &self.state).green().bold(),
+            ]),
+        ])
+        .block(block)
+        .render(layout[0], frame.buffer_mut());
 
         let audio_block = Block::bordered().title(" Audio Level ");
-        Gauge::default().block(audio_block).percent((self.volume * 100.0 )as u16).render(layout[1], frame.buffer_mut());
+        Gauge::default()
+            .block(audio_block)
+            .percent((self.volume * 100.0) as u16)
+            .render(layout[1], frame.buffer_mut());
 
         if show_popup {
             let area = popup_area(area, 60, 20);
@@ -137,43 +190,71 @@ impl App {
 
             match self.state {
                 AppState::EnterNickname => {
-                    frame.render_widget(NickNamePopup{nickname: self.nickname.clone()}, area);
+                    frame.render_widget(
+                        NickNamePopup {
+                            nickname: self.nickname.clone(),
+                        },
+                        area,
+                    );
                 }
                 AppState::Disconnected => {
-                    frame.render_widget(ServerPopup{url: self.connection_string.clone()}, area);
+                    frame.render_widget(
+                        ServerPopup {
+                            url: self.connection_string.clone(),
+                        },
+                        area,
+                    );
+                }
+                AppState::Revealing => {
+                    frame.render_widget(self.current_title_grading.clone().unwrap(), area);
                 }
                 _ => {}
             }
         }
     }
     fn handle_events(&mut self) -> Result<(), Box<dyn Error>> {
-
         match self.event_loop.recv()? {
             AppEvent::Command(cmd) => {
                 match cmd {
-                    Command::Play => { self.play() }
+                    Command::Play => self.play(),
                     Command::Transfer => { /*Should not happen TM*/ }
-                    Command::Pause => { self.pause() }
+                    Command::Pause => self.pause(),
                     Command::Repeat => {
                         if let Some(song) = self.current_song.clone() {
-                            self.append_song(song).unwrap();
+                            self.append_song(song)?;
                         }
                     }
+                    Command::Reveal => { /*Should also not happen TM*/ }
                 }
             }
             AppEvent::SongData(song) => {
                 self.current_song = Some(song.clone());
-                self.append_song(song).unwrap();
+                self.append_song(song)?;
+            }
+            AppEvent::TitleGrading(title_grading) => {
+                self.current_title_grading = Some(title_grading);
+                self.state = AppState::Revealing;
             }
             AppEvent::CrossTerm(event) => match event {
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                     match self.state {
-                        AppState::EnterNickname => { self.handle_nickname_input(key_event); }
-                        AppState::Disconnected => { self.handle_url_input(key_event); }
-                        _ => { self.handle_input(key_event); }
+                        AppState::EnterNickname => {
+                            self.handle_nickname_input(key_event);
+                        }
+                        AppState::Disconnected => {
+                            self.handle_url_input(key_event);
+                        }
+                        _ => {
+                            self.handle_input(key_event);
+                        }
                     }
                 }
                 _ => {}
+            },
+            AppEvent::Disconnected => {
+                self.stream.take().map(|stream| stream.join());
+                self.clear();
+                self.state = AppState::Disconnected;
             }
         }
 
@@ -201,7 +282,16 @@ impl App {
     fn handle_url_input(&mut self, event: KeyEvent) {
         match event.code {
             KeyCode::Char(new) => {
-                self.connection_string.push(new);
+                if new == 'v' && event.modifiers.contains(KeyModifiers::CONTROL) {
+                    if let Ok(mut ctx) = ClipboardContext::new() {
+                        if let Ok(clipboard_content) = ctx.get_contents() {
+                            self.connection_string = clipboard_content;
+                        } 
+                    }
+                }
+                else {
+                    self.connection_string.push(new);
+                }
             }
             KeyCode::Backspace => {
                 self.connection_string.pop();
@@ -216,10 +306,10 @@ impl App {
         }
     }
 
-    fn handle_input(&mut self, event: KeyEvent){
+    fn handle_input(&mut self, event: KeyEvent) {
         match event.code {
             KeyCode::Char('q') => {
-                self.exit=true;
+                self.exit = true;
             }
             KeyCode::Char('+') => {
                 self.increase_volume();
@@ -234,26 +324,40 @@ impl App {
         if let Ok(mut stream) = TcpStream::connect(self.connection_string.as_str()) {
             self.state = AppState::Paused;
             let sender = self.event_sender.clone();
-            
+            let err_sender = self.event_sender.clone();
+
             self.send_nickname(&mut stream);
 
             self.stream = Some(thread::spawn(move || {
-                loop {
-                    let command = read_command(&mut stream).unwrap();
-                    let mut event = AppEvent::Command(command.clone());
-
-                    if let Command::Transfer = command {
-                        let song = read_data(&mut stream).unwrap();
-                        event = AppEvent::SongData(song);
-                    }
-                    sender.send(event).unwrap();
+                if let Err(_) = Self::stream_handler(stream, sender) {
+                    err_sender.send(AppEvent::Disconnected).unwrap();
                 }
             }));
-        }
-        else {
+        } else {
             self.connection_string.clear();
         }
     }
+
+    fn stream_handler(
+        mut stream: TcpStream,
+        sender: Sender<AppEvent>,
+    ) -> Result<(), Box<dyn Error>> {
+        loop {
+            let command = read_command(&mut stream)?;
+            let mut event = AppEvent::Command(command.clone());
+
+            if let Command::Transfer = command {
+                let song = read_data(&mut stream)?;
+                event = AppEvent::SongData(song);
+            } else if let Command::Reveal = command {
+                let reveal_data = read_title_grading(&mut stream)?;
+                event = AppEvent::TitleGrading(reveal_data);
+            }
+
+            sender.send(event)?;
+        }
+    }
+
     fn send_nickname(&mut self, stream: &mut TcpStream) {
         let bytes = self.nickname.as_bytes();
         let num_bytes_numeric = bytes.len() as u64;
@@ -263,7 +367,7 @@ impl App {
         stream.write_all(bytes).unwrap();
     }
 
-    fn append_song(&mut self, song: Vec<u8>) -> Result<(),Box<dyn Error>> {
+    fn append_song(&mut self, song: Vec<u8>) -> Result<(), Box<dyn Error>> {
         self.sink.stop();
         let decoder = Decoder::new(Cursor::new(song))?;
         self.sink.append(decoder);
@@ -280,6 +384,11 @@ impl App {
     fn pause(&mut self) {
         self.state = AppState::Paused;
         self.sink.pause();
+    }
+
+    fn clear(&mut self) {
+        self.sink.clear();
+        self.current_song = None;
     }
 
     fn increase_volume(&mut self) {
@@ -304,7 +413,6 @@ impl App {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-
     let mut terminal = ratatui::init();
 
     let (_audio_stream, handle) = OutputStream::try_default()?;
@@ -321,7 +429,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         t2.send(AppEvent::CrossTerm(event)).unwrap();
     });
 
-    App{
+    App {
         connection_string: String::new(),
         nickname: String::new(),
         state: AppState::EnterNickname,
@@ -329,10 +437,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         stream: None,
         event_sender: t1,
         current_song: None,
+        current_title_grading: None,
         sink,
         volume: 0.5,
         exit: false,
-    }.run(&mut terminal)?;
+    }
+    .run(&mut terminal)?;
 
     ratatui::restore();
     Ok(())
@@ -349,7 +459,11 @@ fn read_command(stream: &mut TcpStream) -> Result<Command, Box<dyn Error>> {
         2 => Ok(Command::Transfer),
         3 => Ok(Command::Pause),
         4 => Ok(Command::Repeat),
-        _ => Err(Box::new(io::Error::new(ErrorKind::Other, "Invalid Command")))
+        5 => Ok(Command::Reveal),
+        _ => Err(Box::new(io::Error::new(
+            ErrorKind::Other,
+            "Invalid Command",
+        ))),
     }
 }
 
@@ -365,6 +479,20 @@ fn read_data(stream: &mut TcpStream) -> Result<Vec<u8>, Box<dyn Error>> {
 
     //println!("I have read the data!");
     Ok(data)
+}
+
+fn read_title_grading(stream: &mut TcpStream) -> Result<TitleGrading, Box<dyn Error>> {
+    let mut bytes_to_read = [0_u8; 64 / 8];
+    stream.read_exact(&mut bytes_to_read)?;
+    let bytes = u64::from_be_bytes(bytes_to_read);
+
+    let mut data = vec![0_u8; bytes as usize];
+    stream.read_exact(&mut data)?;
+
+    let parse_string = String::from_utf8(data)?;
+    let title_grading: TitleGrading = serde_json::from_str(&parse_string)?;
+
+    Ok(title_grading)
 }
 
 fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
