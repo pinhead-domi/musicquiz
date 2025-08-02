@@ -20,6 +20,7 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use chrono::{Datelike, Local, Timelike};
 use log::LevelFilter;
 
 trait LogExt {
@@ -147,7 +148,7 @@ impl Widget for GameInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Grading {
     interpret: Option<bool>,
     title: Option<bool>,
@@ -508,7 +509,18 @@ fn read_nickname(stream: &mut TcpStream) -> Result<String, Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    simple_logging::log_to_file("test.log", LevelFilter::Info)?;
+    let now = Local::now();
+    simple_logging::log_to_file(
+        format!(
+            "{}-{}-{}-{}_server.log",
+            now.year(),
+            now.month(),
+            now.day(),
+            now.minute()
+        )
+        .as_str(),
+        LevelFilter::Info,
+    )?;
 
     let file_content = match fs::read_to_string(
         "C:/Users/Dominik Haring/Documents/GitHub/musicquiz/titles.json",
@@ -579,7 +591,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let app_result = App {
+    let mut app = App {
         title: 0,
         playing: false,
         transfered: false,
@@ -593,9 +605,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         grading_history: Vec::new(),
         game_over: false,
-    }
-    .run(&mut terminal)
-    .log();
+    };
+
+    let app_result = app.run(&mut terminal).log();
+
+    let grading_str = serde_json::to_string(&app.grading_history)?;
+    fs::write(
+        format!(
+            "{}-{}-{}-{}_results.log",
+            now.year(),
+            now.month(),
+            now.day(),
+            now.minute()
+        )
+        .as_str(),
+        grading_str,
+    )?;
 
     ratatui::restore();
     return app_result;
