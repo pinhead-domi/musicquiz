@@ -1,4 +1,4 @@
-use crossterm::event;
+use crossterm::event::{self, KeyModifiers};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -18,6 +18,7 @@ use std::{
     io::{self, Cursor, ErrorKind, Read, Write},
     net::TcpStream,
 };
+use copypasta::{ClipboardContext, ClipboardProvider};
 
 #[derive(Clone)]
 enum Command {
@@ -281,7 +282,16 @@ impl App {
     fn handle_url_input(&mut self, event: KeyEvent) {
         match event.code {
             KeyCode::Char(new) => {
-                self.connection_string.push(new);
+                if new == 'v' && event.modifiers.contains(KeyModifiers::CONTROL) {
+                    if let Ok(mut ctx) = ClipboardContext::new() {
+                        if let Ok(clipboard_content) = ctx.get_contents() {
+                            self.connection_string = clipboard_content;
+                        } 
+                    }
+                }
+                else {
+                    self.connection_string.push(new);
+                }
             }
             KeyCode::Backspace => {
                 self.connection_string.pop();
