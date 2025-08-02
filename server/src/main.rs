@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::fmt::format;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -21,7 +20,7 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
-use chrono::{DateTime, Datelike, Local, Timelike};
+use chrono::{Datelike, Local, Timelike};
 use log::LevelFilter;
 
 trait LogExt {
